@@ -71,6 +71,14 @@ name resolution problem, not a packet problem.
 Running it twice is safe. `/remove` cuts the domain lines after backing the file
 up, and aborts without writing anything if the result looks suspiciously empty.
 
+The verdict at the end is coloured, so you do not have to read the middle part:
+
+| Colour | Meaning |
+|---|---|
+| green | done, the entries are written |
+| red | failed, `hosts` was not touched |
+| cyan | nothing to change, the entries are already there |
+
 ## After installing
 
 Close Roblox completely and open it again. The client caches failed lookups and
@@ -83,8 +91,9 @@ will not retry on its own, so without a restart the grey boxes stay.
   `IPS` variable at the top of the script.
 - `hosts` applies to the whole machine, including the website and Studio. That
   is exactly what is needed here - all three were broken.
-- The only dependency is `curl.exe`, which ships with Windows 10 and 11. Without
-  it the script writes the built-in list unverified.
+- Dependencies are `curl.exe` and PowerShell, both built into Windows 10 and 11.
+  Without `curl` the script writes the built-in list unverified; without
+  PowerShell the verdict prints uncoloured.
 - The script sends nothing anywhere and touches nothing except `hosts` and its
   own backup folder.
 

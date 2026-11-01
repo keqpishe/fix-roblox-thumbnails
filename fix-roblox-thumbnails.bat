@@ -8,14 +8,19 @@ rem
 rem   THE PROBLEM
 rem   On many Russian ISPs the name tr.rbxcdn.com does not resolve: DNS returns
 rem   a CNAME to trns1.rbxcdn.com, and that name has neither an A nor an AAAA
-rem   record. Result: grey boxes instead of place placeholders, game icons,
+rem   record. Result: grey boxes instead of place thumbnails, game icons,
 rem   avatars and screenshots - in the Roblox app, on the website and in Studio.
 rem   The API itself still works, so titles, ratings and player counts show up.
 rem
 rem   WHAT THIS DOES
 rem   Pins tr.rbxcdn.com to working CDN addresses in the hosts file.
 rem   Each address is probed over HTTPS before it is written.
-rem   The script backs up hosts, flushes the DNS cache and prints the result.
+rem   The script backs up hosts, flushes the DNS cache and reports the result.
+rem
+rem   THE VERDICT AT THE END IS COLOURED
+rem       green  - done, the entries are written
+rem       red    - failed, hosts was not touched
+rem       cyan   - nothing to do, the entries are already there
 rem
 rem   USAGE
 rem       fix-roblox-thumbnails.bat            install
@@ -33,6 +38,7 @@ set "DOMAIN=tr.rbxcdn.com"
 set "IPS=18.64.211.78 18.64.211.88 18.64.211.103 23.73.2.78"
 set "WORKDIR=%USERPROFILE%\roblox-thumbnails-fix"
 set "HOSTS=%SystemRoot%\System32\drivers\etc\hosts"
+set "VF=%TEMP%\rbxfix-verdict.txt"
 
 rem  Debug hook: point the script at another file to test the logic safely.
 if defined RBX_HOSTS set "HOSTS=%RBX_HOSTS%"
@@ -69,6 +75,7 @@ echo   [1/4] Backing up the current hosts file
 copy /y "%HOSTS%" "%BACKUP%" >nul 2>&1
 if not exist "%BACKUP%" (
     echo         failed, aborting
+    set "FAILNOTE=Could not back up the hosts file, so nothing was written."
     goto fail
 )
 echo         %BACKUP%
@@ -110,30 +117,44 @@ echo   [4/4] Flushing the DNS cache
 ipconfig /flushdns >nul 2>&1
 echo         done
 
-if defined RBX_HOSTS goto end
+if defined RBX_HOSTS goto installed
 
 echo.
 echo   Check: ping %DOMAIN%
 ping -n 2 %DOMAIN% 2>nul | findstr /i /c:"[" /c:"TTL"
-echo.
-echo   Done. Fully close Roblox and open it again - it caches failed
-echo   lookups and will not retry on its own.
-echo   To undo: %~nx0 /remove   or   %~nx0 /rollback
-goto end
+
+:installed
+set "RC=0"
+>"%VF%" echo.
+>>"%VF%" echo   DONE. These lines are now in %HOSTS%:
+>>"%VF%" echo.
+for %%I in (!PICKED!) do >>"%VF%" echo         %%I %DOMAIN%
+>>"%VF%" echo.
+>>"%VF%" echo   Close Roblox completely and open it again - it caches failed
+>>"%VF%" echo   lookups and will not retry on its own.
+>>"%VF%" echo   Undo: %~nx0 /remove   or   %~nx0 /rollback
+call :verdict Green
+goto finish
 
 :already
-echo   The entries are already there, nothing to change:
-echo.
-findstr /i /c:"%DOMAIN%" "%HOSTS%"
-echo.
-echo   If the images are still grey, restart Roblox.
-echo   To rewrite them: %~nx0 /remove, then run this script again.
-goto end
+set "RC=0"
+>"%VF%" echo.
+>>"%VF%" echo   NOTHING TO CHANGE. The entries are already in %HOSTS%:
+>>"%VF%" echo.
+findstr /i /c:"%DOMAIN%" "%HOSTS%" >>"%VF%"
+>>"%VF%" echo.
+>>"%VF%" echo   If the images are still grey, restart Roblox.
+>>"%VF%" echo   To rewrite them: %~nx0 /remove, then run this script again.
+call :verdict Cyan
+goto finish
 
 rem  ------------------------------------------------------------------- remove
 :remove
 call :require_admin
 if errorlevel 1 exit /b 0
+
+findstr /i /c:"%DOMAIN%" "%HOSTS%" >nul 2>&1
+if errorlevel 1 goto nothing_to_remove
 
 if not exist "%WORKDIR%" mkdir "%WORKDIR%" >nul 2>&1
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "TS=%%i"
@@ -145,13 +166,32 @@ findstr /v /i /c:"%DOMAIN%" "%HOSTS%" > "%NEW%"
 for %%A in ("%NEW%") do if %%~zA LSS 10 (
     echo   The result looks suspiciously empty, aborting.
     del "%NEW%" >nul 2>&1
+    set "FAILNOTE=The filtered hosts file came out too short, so the file was left as is."
     goto fail
 )
 copy /y "%NEW%" "%HOSTS%" >nul 2>&1
+if errorlevel 1 (
+    del "%NEW%" >nul 2>&1
+    set "FAILNOTE=Could not replace the hosts file."
+    goto fail
+)
 del "%NEW%" >nul 2>&1
 ipconfig /flushdns >nul 2>&1
-echo   Lines with %DOMAIN% removed, DNS cache flushed.
-goto end
+
+set "RC=0"
+>"%VF%" echo.
+>>"%VF%" echo   DONE. Lines with %DOMAIN% were removed, the DNS cache was flushed.
+>>"%VF%" echo   %HOSTS% keeps its other entries.
+>>"%VF%" echo   A copy of the file from before this run is in %WORKDIR%
+call :verdict Green
+goto finish
+
+:nothing_to_remove
+set "RC=0"
+>"%VF%" echo.
+>>"%VF%" echo   NOTHING TO CHANGE. There are no %DOMAIN% lines in %HOSTS%.
+call :verdict Cyan
+goto finish
 
 rem  ----------------------------------------------------------------- rollback
 :rollback
@@ -163,18 +203,23 @@ for /f "delims=" %%f in ('dir /b /a-d /o-d "%WORKDIR%\hosts-*.txt" 2^>nul') do (
     if not defined LATEST set "LATEST=%WORKDIR%\%%f"
 )
 if not defined LATEST (
-    echo   No backups found in %WORKDIR%
+    set "FAILNOTE=No backups found in %WORKDIR%"
     goto fail
 )
-echo   Restoring hosts from %LATEST%
 copy /y "%LATEST%" "%HOSTS%" >nul 2>&1
 if errorlevel 1 (
-    echo   Restore failed.
+    set "FAILNOTE=Could not copy the backup back."
     goto fail
 )
 ipconfig /flushdns >nul 2>&1
-echo   Done, hosts is back to the state before the install.
-goto end
+
+set "RC=0"
+>"%VF%" echo.
+>>"%VF%" echo   DONE. %HOSTS% was restored from this backup:
+>>"%VF%" echo         %LATEST%
+>>"%VF%" echo   The DNS cache was flushed.
+call :verdict Green
+goto finish
 
 rem  --------------------------------------------------------------------- help
 :help
@@ -187,7 +232,8 @@ echo     %~nx0 /help        this help
 echo.
 echo   Backups:  %WORKDIR%
 echo   Hosts:    %HOSTS%
-goto end
+set "RC=0"
+goto finish
 
 rem  ------------------------------------------------------------------ helpers
 :banner
@@ -210,17 +256,28 @@ fltmc >nul 2>&1
 if not errorlevel 1 exit /b 0
 echo   Administrator rights are required, asking for UAC...
 powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs" >nul 2>&1
-if errorlevel 1 echo   Elevation was declined.
+if errorlevel 1 (
+    set "FAILNOTE=Elevation was declined, so nothing was changed."
+    echo   Elevation was declined.
+)
 exit /b 1
 
-:fail
-echo.
-echo   That did not work. Nothing was changed, hosts is untouched.
-set "RC=1"
-goto finish
+rem  Prints the collected verdict lines in the given colour. One PowerShell
+rem  call for the whole block; if PowerShell is unavailable they print plain.
+:verdict
+if not exist "%VF%" exit /b 0
+powershell -NoProfile -Command "Get-Content -LiteralPath '%VF%' | ForEach-Object { Write-Host $_ -ForegroundColor %~1 }" 2>nul
+if errorlevel 1 type "%VF%"
+del "%VF%" >nul 2>&1
+exit /b 0
 
-:end
-set "RC=0"
+:fail
+set "RC=1"
+>"%VF%" echo.
+>>"%VF%" echo   FAILED. Nothing was changed, %HOSTS% is untouched.
+if defined FAILNOTE >>"%VF%" echo.
+if defined FAILNOTE >>"%VF%" echo   !FAILNOTE!
+call :verdict Red
 
 :finish
 if not defined NOPAUSE pause
